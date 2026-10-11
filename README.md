@@ -107,3 +107,17 @@ Outputs:
 
 bucket_name = "tfstate-000000000000-us-east-1"
 ```
+
+## Step 1
+We will test the first IAM module that is prepared to be associated with eks pod identity:
+```
+source scripts/localstack.env
+cd services/service-alpha/.tf
+terraform init -input=false -backend-config=../../../backend.hcl
+terraform apply -input=false -auto-approve -var eks_pod_identity=false # eks_pod_identity=false because localstack doesn't support eks
+aws iam get-role --role-name service-alpha-mx-workload --query 'Role.AssumeRolePolicyDocument.Statement[0].Principal' --output text --no-cli-pager
+aws s3 ls s3://tfstate-000000000000-us-east-1 --recursive # We should see the current tf state
+
+terraform plan -input=false -var eks_pod_identity=false \
+  -var 'iam_policy_statements=[{actions=["s3:*"],resources=["*"]}]' 2>&1 | grep -m1 "Least privilege" # Validate that we cannot create non-justified wildcard statements
+```
