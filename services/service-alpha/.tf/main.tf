@@ -28,7 +28,7 @@ variable "org" {
 }
 variable "region" {
   type        = string
-  description = "Country: mx | co | br."
+  description = "Country: set in <country>.tfvars."
 }
 variable "extra_tags" {
   type    = map(string)
@@ -36,11 +36,12 @@ variable "extra_tags" {
 }
 
 module "context" {
-  source = "../../../modules/iam-role/context"
+  source = "../../../modules/context"
 
   service     = var.service
   region      = var.region
   regions     = var.regions
+  workspace   = terraform.workspace
   team        = var.team
   cost_center = var.cost_center
   owner       = var.owner
