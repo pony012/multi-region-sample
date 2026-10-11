@@ -121,3 +121,111 @@ aws s3 ls s3://tfstate-000000000000-us-east-1 --recursive # We should see the cu
 terraform plan -input=false -var eks_pod_identity=false \
   -var 'iam_policy_statements=[{actions=["s3:*"],resources=["*"]}]' 2>&1 | grep -m1 "Least privilege" # Validate that we cannot create non-justified wildcard statements
 ```
+
+## Step 2
+We could test that we're going to generate different roles for different countries, with different conventional names:
+```
+cd services/service-alpha/.tf/
+terraform init -input=false -backend-config=../../../backend.hcl
+terraform plan -var region=mx -var eks_pod_identity=false
+terraform plan -var region=br -var eks_pod_identity=false
+```
+We'll see that for mx we're getting:
+```
+module.iam.aws_iam_role.this: Refreshing state... [id=service-alpha-mx-workload]
+module.iam.aws_iam_role_policy.custom[0]: Refreshing state... [id=service-alpha-mx-workload:custom]
+
+Terraform used the selected providers to generate the following execution plan. Resource actions are indicated with the following symbols:
+  ~ update in-place
+
+Terraform will perform the following actions:
+
+  # module.iam.aws_iam_role.this will be updated in-place
+  ~ resource "aws_iam_role" "this" {
+        id                    = "service-alpha-mx-workload"
+        name                  = "service-alpha-mx-workload"
+        tags                  = {}
+      ~ tags_all              = {
+          + "Country"    = "mx"
+          + "Owner"      = "Guild-Ledger"
+          + "Repository" = "github.com/some-example-org/service-alpha"
+            # (4 unchanged elements hidden)
+        }
+        # (11 unchanged attributes hidden)
+
+        # (1 unchanged block hidden)
+    }
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+
+Changes to Outputs:
+  + aws_region    = "us-east-1"
+  + country       = "mx"
+```
+And for br we're getting
+```
+module.iam.aws_iam_role.this: Refreshing state... [id=service-alpha-mx-workload]
+module.iam.aws_iam_role_policy.custom[0]: Refreshing state... [id=service-alpha-mx-workload:custom]
+
+Terraform used the selected providers to generate the following execution plan. Resource actions are indicated with the following symbols:
+-/+ destroy and then create replacement
+
+Terraform will perform the following actions:
+
+  # module.iam.aws_iam_role.this must be replaced
+-/+ resource "aws_iam_role" "this" {
+      ~ arn                   = "arn:aws:iam::000000000000:role/service-alpha-mx-workload" -> (known after apply)
+      ~ create_date           = "2026-10-11T07:39:29Z" -> (known after apply)
+      ~ id                    = "service-alpha-mx-workload" -> (known after apply)
+      ~ managed_policy_arns   = [] -> (known after apply)
+      ~ name                  = "service-alpha-mx-workload" -> "service-alpha-br-workload" # forces replacement
+      + name_prefix           = (known after apply)
+      - tags                  = {} -> null
+      ~ tags_all              = {
+          + "Country"    = "br"
+          + "Owner"      = "Guild-Ledger"
+          + "Repository" = "github.com/some-example-org/service-alpha"
+            # (4 unchanged elements hidden)
+        }
+      ~ unique_id             = "AROAQAAAAAAAAN6AAEGPD" -> (known after apply)
+        # (6 unchanged attributes hidden)
+
+      ~ inline_policy (known after apply)
+      - inline_policy {
+          - name   = "custom" -> null
+          - policy = jsonencode(
+                {
+                  - Statement = [
+                      - {
+                          - Action   = [
+                              - "cloudwatch:PutMetricData",
+                            ]
+                          - Effect   = "Allow"
+                          - Resource = [
+                              - "*",
+                            ]
+                          - Sid      = "JustifiedWildcard0"
+                        },
+                    ]
+                  - Version   = "2012-10-17"
+                }
+            ) -> null
+        }
+    }
+
+  # module.iam.aws_iam_role_policy.custom[0] must be replaced
+-/+ resource "aws_iam_role_policy" "custom" {
+      ~ id          = "service-alpha-mx-workload:custom" -> (known after apply)
+        name        = "custom"
+      + name_prefix = (known after apply)
+      ~ role        = "service-alpha-mx-workload" -> "service-alpha-br-workload" # forces replacement
+        # (1 unchanged attribute hidden)
+    }
+
+Plan: 2 to add, 0 to change, 2 to destroy.
+
+Changes to Outputs:
+  + aws_region    = "sa-east-1"
+  + country       = "br"
+  ~ workload_role = "service-alpha-mx-workload" -> "service-alpha-br-workload"
+```
