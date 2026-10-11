@@ -4,3 +4,4 @@ team        = "platform-team"
 cost_center = "Engineering"
 repository  = "github.com/some-example-org/multi-region-sample"
 regions     = ["mx", "co", "br"]
+cluster     = "shared"

@@ -22,6 +22,14 @@ variable "single_nat_gateway" {
   default = false
 }
 
+variable "cluster" {
+  type = string
+}
+variable "node_group" {
+  type    = any
+  default = {}
+}
+
 module "context" {
   source = "../../modules/context"
 
@@ -32,6 +40,7 @@ module "context" {
   team        = var.team
   cost_center = var.cost_center
   repository  = var.repository
+  cluster     = var.cluster
 }
 
 module "vpc" {
@@ -41,6 +50,14 @@ module "vpc" {
   cidr               = module.context.vpc_cidr
   azs                = module.context.azs
   single_nat_gateway = var.single_nat_gateway
+}
+
+module "eks" {
+  source = "../../modules/eks"
+
+  name       = module.context.cluster_name
+  subnet_ids = module.vpc.private_subnet_ids
+  node_group = var.node_group
 }
 
 output "country" {
@@ -53,4 +70,8 @@ output "aws_region" {
 
 output "vpc_cidr" {
   value = module.context.vpc_cidr
+}
+
+output "cluster_name" {
+  value = module.eks.name
 }

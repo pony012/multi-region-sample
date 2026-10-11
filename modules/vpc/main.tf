@@ -59,8 +59,8 @@ module "vpc" {
   public_subnets   = [for i in range(3) : cidrsubnet(var.cidr, 6, 32 + i)] # 10.0.128.0/22, 10.0.132.0/22, 10.0.136.0/22
   database_subnets = [for i in range(3) : cidrsubnet(var.cidr, 6, 36 + i)] # 10.0.144.0/22, 10.0.148.0/22, 10.0.152.0/22
 
-  private_subnet_tags  = { Tier = "Compute" }
-  public_subnet_tags   = { Tier = "Public" }
+  private_subnet_tags  = { Tier = "Compute" , "kubernetes.io/role/internal-elb" = "1" } # Tag / annotation for k8s
+  public_subnet_tags   = { Tier = "Public" , "kubernetes.io/role/elb" = "1" } # Tag / annotation for k8s
   database_subnet_tags = { Tier = "Data" }
 
   create_database_subnet_group = false

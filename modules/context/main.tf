@@ -61,6 +61,12 @@ variable "extra_tags" {
   default = {}
 }
 
+variable "cluster" {
+  type        = string
+  default     = "shared"
+  description = "Logical cluster; physical cluster = <cluster>-<country>."
+}
+
 locals {
   # The only place where countries are defined (docs/conventions.md).
   # Only the second octet of the VPC CIDR changes between countries.
@@ -123,4 +129,9 @@ output "name_prefix" {
 
 output "workload_role_name" {
   value = "${var.service}-${var.region}-workload"
+}
+
+output "cluster_name" {
+  description = "<cluster>-<country>"
+  value       = "${var.cluster}-${var.region}"
 }
