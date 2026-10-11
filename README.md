@@ -89,3 +89,21 @@ podman machine stop podman-machine-rootful
 podman machine set --memory 6144 podman-machine-rootful
 podman machine start podman-machine-rootful
 ````
+
+# Steps
+
+## Step 0
+Run
+```
+source scripts/localstack.env
+cd platform/bootstrap
+terraform init && terraform apply
+```
+Check the plan, write `yes` and press `Enter`, you should see
+```
+Apply complete! Resources: 4 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+bucket_name = "tfstate-000000000000-us-east-1"
+```
