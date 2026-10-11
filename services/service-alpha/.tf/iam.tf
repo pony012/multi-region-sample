@@ -16,8 +16,8 @@ variable "eks_pod_identity" {
 module "iam" {
   source = "../../../modules/iam-role"
 
-  name                            = "${var.service}-mx-workload"
-  cluster_name                    = "shared-mx"
+  name                            = module.context.workload_role_name # Referenced in main.tf
+  cluster_name                    = module.context.cluster_name # Referenced in main.tf
   namespace                       = var.service
   service_account                 = var.service
   create_pod_identity_association = var.eks_pod_identity
