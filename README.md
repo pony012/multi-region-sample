@@ -109,29 +109,13 @@ bucket_name = "tfstate-000000000000-us-east-1"
 ```
 
 ## Step 1
-We will test the first IAM module that is prepared to be associated with eks pod identity:
-```
-source scripts/localstack.env
-cd services/service-alpha/.tf
-terraform init -input=false -backend-config=../../../backend.hcl
-terraform apply -input=false -auto-approve -var eks_pod_identity=false # eks_pod_identity=false because localstack doesn't support eks
-aws iam get-role --role-name service-alpha-mx-workload --query 'Role.AssumeRolePolicyDocument.Statement[0].Principal' --output text --no-cli-pager
-aws s3 ls s3://tfstate-000000000000-us-east-1 --recursive # We should see the current tf state
 
-terraform plan -input=false -var eks_pod_identity=false \
-  -var 'iam_policy_statements=[{actions=["s3:*"],resources=["*"]}]' 2>&1 | grep -m1 "Least privilege" # Validate that we cannot create non-justified wildcard statements
-```
+We're working with workspaces, so we can ensure that a workspace for a given country cannot be aplied to another country by mistake:
+<details>
+<summary>Correct workspace validation</summary>
 
-## Step 2
-We could test that we're going to generate different roles for different countries, with different conventional names:
 ```
-cd services/service-alpha/.tf/
-terraform init -input=false -backend-config=../../../backend.hcl
-terraform plan -var region=mx -var eks_pod_identity=false
-terraform plan -var region=br -var eks_pod_identity=false
-```
-We'll see that for mx we're getting:
-```
+.tf git:(feat/multi-state-multi-service) ✗ terraform apply -input=false -var-file=mx.tfvars -var eks_pod_identity=false
 module.iam.aws_iam_role.this: Refreshing state... [id=service-alpha-mx-workload]
 module.iam.aws_iam_role_policy.custom[0]: Refreshing state... [id=service-alpha-mx-workload:custom]
 
@@ -146,6 +130,7 @@ Terraform will perform the following actions:
         name                  = "service-alpha-mx-workload"
         tags                  = {}
       ~ tags_all              = {
+          + "Compliance" = "ARCO"
           + "Country"    = "mx"
           + "Owner"      = "Guild-Ledger"
           + "Repository" = "github.com/some-example-org/service-alpha"
@@ -161,71 +146,705 @@ Plan: 0 to add, 1 to change, 0 to destroy.
 Changes to Outputs:
   + aws_region    = "us-east-1"
   + country       = "mx"
+
+Do you want to perform these actions in workspace "mx"?
+  Terraform will perform the actions described above.
+  Only 'yes' will be accepted to approve.
+
+  Enter a value: yes
+
+module.iam.aws_iam_role.this: Modifying... [id=service-alpha-mx-workload]
+module.iam.aws_iam_role.this: Modifications complete after 0s [id=service-alpha-mx-workload]
+
+Apply complete! Resources: 0 added, 1 changed, 0 destroyed.
+
+Outputs:
+
+aws_region = "us-east-1"
+country = "mx"
+workload_role = "service-alpha-mx-workload"
 ```
-And for br we're getting
+
+**This should fail because os missconfiguration of region**
+
 ```
+➜  .tf git:(feat/multi-state-multi-service) ✗ terraform plan -input=false -var-file=co.tfvars
+
+Changes to Outputs:
+  ~ country = "mx" -> "co"
+
+You can apply this plan to save these new output values to the Terraform state, without changing any real infrastructure.
+╷
+│ Error: Module output value precondition failed
+│
+│   on ../../../modules/context/main.tf line 101, in output "aws_region":
+│  101:     condition     = var.workspace == var.region
+│     ├────────────────
+│     │ var.region is "co"
+│     │ var.workspace is "mx"
+│
+│ Workspace "mx" does not match country "co". Run: terraform workspace select -or-create co  (or TF_WORKSPACE=co).
+╵
+```
+
+**and then when we change workspace:**
+
+```
+➜  .tf git:(feat/multi-state-multi-service) ✗ terraform workspace select -or-create co
+Created and switched to workspace "co"!
+
+You're now on a new, empty workspace. Workspaces isolate their state,
+so if you run "terraform plan" Terraform will not see any existing state
+for this configuration.
+➜  .tf git:(feat/multi-state-multi-service) ✗ terraform apply -input=false -var-file=co.tfvars -var eks_pod_identity=false
+...
+Apply complete! Resources: 3 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+aws_region = "us-east-2"
+country = "co"
+workload_role = "service-alpha-co-workload"
+```
+</details>
+
+After that validation, we can safetly create the infra for all countries with the script `validate_deployments.sh`
+
+<details>
+<summary>Deployment for all three regions</summary>
+
+```
+➜  multi-region-sample git:(feat/multi-state-multi-service) ✗ ./validate_deployments.sh
+Switched to workspace "mx".
 module.iam.aws_iam_role.this: Refreshing state... [id=service-alpha-mx-workload]
 module.iam.aws_iam_role_policy.custom[0]: Refreshing state... [id=service-alpha-mx-workload:custom]
 
+No changes. Your infrastructure matches the configuration.
+
+Terraform has compared your real infrastructure against your configuration and found no differences, so no changes are needed.
+
+Apply complete! Resources: 0 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+aws_region = "us-east-1"
+country = "mx"
+workload_role = "service-alpha-mx-workload"
+Switched to workspace "co".
+module.iam.aws_iam_role.this: Refreshing state... [id=service-alpha-co-workload]
+module.iam.aws_iam_role_policy.custom[0]: Refreshing state... [id=service-alpha-co-workload:custom]
+
+No changes. Your infrastructure matches the configuration.
+
+Terraform has compared your real infrastructure against your configuration and found no differences, so no changes are needed.
+
+Apply complete! Resources: 0 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+aws_region = "us-east-2"
+country = "co"
+workload_role = "service-alpha-co-workload"
+Created and switched to workspace "br"!
+
+You're now on a new, empty workspace. Workspaces isolate their state,
+so if you run "terraform plan" Terraform will not see any existing state
+for this configuration.
+
 Terraform used the selected providers to generate the following execution plan. Resource actions are indicated with the following symbols:
--/+ destroy and then create replacement
+  + create
 
 Terraform will perform the following actions:
 
-  # module.iam.aws_iam_role.this must be replaced
--/+ resource "aws_iam_role" "this" {
-      ~ arn                   = "arn:aws:iam::000000000000:role/service-alpha-mx-workload" -> (known after apply)
-      ~ create_date           = "2026-10-11T07:39:29Z" -> (known after apply)
-      ~ id                    = "service-alpha-mx-workload" -> (known after apply)
-      ~ managed_policy_arns   = [] -> (known after apply)
-      ~ name                  = "service-alpha-mx-workload" -> "service-alpha-br-workload" # forces replacement
+  # module.iam.aws_iam_role.this will be created
+  + resource "aws_iam_role" "this" {
+      + arn                   = (known after apply)
+      + assume_role_policy    = jsonencode(
+            {
+              + Statement = [
+                  + {
+                      + Action    = [
+                          + "sts:AssumeRole",
+                          + "sts:TagSession",
+                        ]
+                      + Effect    = "Allow"
+                      + Principal = {
+                          + Service = "pods.eks.amazonaws.com"
+                        }
+                    },
+                ]
+              + Version   = "2012-10-17"
+            }
+        )
+      + create_date           = (known after apply)
+      + force_detach_policies = false
+      + id                    = (known after apply)
+      + managed_policy_arns   = (known after apply)
+      + max_session_duration  = 3600
+      + name                  = "service-alpha-br-workload"
       + name_prefix           = (known after apply)
-      - tags                  = {} -> null
-      ~ tags_all              = {
+      + path                  = "/"
+      + tags_all              = {
+          + "CostCenter" = "Engineering"
           + "Country"    = "br"
+          + "ManagedBy"  = "terraform"
           + "Owner"      = "Guild-Ledger"
           + "Repository" = "github.com/some-example-org/service-alpha"
-            # (4 unchanged elements hidden)
+          + "Service"    = "service-alpha"
+          + "Team"       = "example-team"
         }
-      ~ unique_id             = "AROAQAAAAAAAAN6AAEGPD" -> (known after apply)
-        # (6 unchanged attributes hidden)
+      + unique_id             = (known after apply)
 
-      ~ inline_policy (known after apply)
-      - inline_policy {
-          - name   = "custom" -> null
-          - policy = jsonencode(
-                {
-                  - Statement = [
-                      - {
-                          - Action   = [
-                              - "cloudwatch:PutMetricData",
-                            ]
-                          - Effect   = "Allow"
-                          - Resource = [
-                              - "*",
-                            ]
-                          - Sid      = "JustifiedWildcard0"
-                        },
-                    ]
-                  - Version   = "2012-10-17"
-                }
-            ) -> null
-        }
+      + inline_policy (known after apply)
     }
 
-  # module.iam.aws_iam_role_policy.custom[0] must be replaced
--/+ resource "aws_iam_role_policy" "custom" {
-      ~ id          = "service-alpha-mx-workload:custom" -> (known after apply)
-        name        = "custom"
+  # module.iam.aws_iam_role_policy.custom[0] will be created
+  + resource "aws_iam_role_policy" "custom" {
+      + id          = (known after apply)
+      + name        = "custom"
       + name_prefix = (known after apply)
-      ~ role        = "service-alpha-mx-workload" -> "service-alpha-br-workload" # forces replacement
-        # (1 unchanged attribute hidden)
+      + policy      = jsonencode(
+            {
+              + Statement = [
+                  + {
+                      + Action   = [
+                          + "cloudwatch:PutMetricData",
+                        ]
+                      + Effect   = "Allow"
+                      + Resource = [
+                          + "*",
+                        ]
+                      + Sid      = "JustifiedWildcard0"
+                    },
+                ]
+              + Version   = "2012-10-17"
+            }
+        )
+      + role        = "service-alpha-br-workload"
     }
 
-Plan: 2 to add, 0 to change, 2 to destroy.
+Plan: 2 to add, 0 to change, 0 to destroy.
 
 Changes to Outputs:
   + aws_region    = "sa-east-1"
   + country       = "br"
-  ~ workload_role = "service-alpha-mx-workload" -> "service-alpha-br-workload"
+  + workload_role = "service-alpha-br-workload"
+module.iam.aws_iam_role.this: Creating...
+module.iam.aws_iam_role.this: Creation complete after 0s [id=service-alpha-br-workload]
+module.iam.aws_iam_role_policy.custom[0]: Creating...
+module.iam.aws_iam_role_policy.custom[0]: Creation complete after 0s [id=service-alpha-br-workload:custom]
+
+Apply complete! Resources: 2 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+aws_region = "sa-east-1"
+country = "br"
+workload_role = "service-alpha-br-workload"
+
+Created and switched to workspace "mx"!
+
+You're now on a new, empty workspace. Workspaces isolate their state,
+so if you run "terraform plan" Terraform will not see any existing state
+for this configuration.
+
+
+Terraform used the selected providers to generate the following execution plan. Resource actions are indicated with the following symbols:
+  + create
+
+Terraform will perform the following actions:
+
+  # module.iam.aws_iam_role.this will be created
+  + resource "aws_iam_role" "this" {
+      + arn                   = (known after apply)
+      + assume_role_policy    = jsonencode(
+            {
+              + Statement = [
+                  + {
+                      + Action    = [
+                          + "sts:AssumeRole",
+                          + "sts:TagSession",
+                        ]
+                      + Effect    = "Allow"
+                      + Principal = {
+                          + Service = "pods.eks.amazonaws.com"
+                        }
+                    },
+                ]
+              + Version   = "2012-10-17"
+            }
+        )
+      + create_date           = (known after apply)
+      + force_detach_policies = false
+      + id                    = (known after apply)
+      + managed_policy_arns   = (known after apply)
+      + max_session_duration  = 3600
+      + name                  = "service-beta-mx-workload"
+      + name_prefix           = (known after apply)
+      + path                  = "/"
+      + tags_all              = {
+          + "CostCenter" = "R+D"
+          + "Country"    = "mx"
+          + "ManagedBy"  = "terraform"
+          + "Owner"      = "Chapter-Data"
+          + "Repository" = "github.com/some-example-org/service-beta"
+          + "Service"    = "service-beta"
+          + "Team"       = "Analytics"
+        }
+      + unique_id             = (known after apply)
+
+      + inline_policy (known after apply)
+    }
+
+  # module.s3["reports"].aws_iam_role_policy.grant[0] will be created
+  + resource "aws_iam_role_policy" "grant" {
+      + id          = (known after apply)
+      + name        = "s3-example-org-service-beta-reports-mx"
+      + name_prefix = (known after apply)
+      + policy      = jsonencode(
+            {
+              + Statement = [
+                  + {
+                      + Action   = [
+                          + "s3:ListBucket",
+                        ]
+                      + Effect   = "Allow"
+                      + Resource = [
+                          + "arn:aws:s3:::example-org-service-beta-reports-mx",
+                        ]
+                      + Sid      = "Bucket"
+                    },
+                  + {
+                      + Action   = [
+                          + "s3:GetObject",
+                        ]
+                      + Effect   = "Allow"
+                      + Resource = [
+                          + "arn:aws:s3:::example-org-service-beta-reports-mx/*",
+                        ]
+                      + Sid      = "Objects"
+                    },
+                ]
+              + Version   = "2012-10-17"
+            }
+        )
+      + role        = "service-beta-mx-workload"
+    }
+
+  # module.s3["reports"].aws_s3_bucket.this will be created
+  + resource "aws_s3_bucket" "this" {
+      + acceleration_status         = (known after apply)
+      + acl                         = (known after apply)
+      + arn                         = (known after apply)
+      + bucket                      = "example-org-service-beta-reports-mx"
+      + bucket_domain_name          = (known after apply)
+      + bucket_namespace            = (known after apply)
+      + bucket_prefix               = (known after apply)
+      + bucket_region               = (known after apply)
+      + bucket_regional_domain_name = (known after apply)
+      + force_destroy               = false
+      + hosted_zone_id              = (known after apply)
+      + id                          = (known after apply)
+      + object_lock_enabled         = (known after apply)
+      + policy                      = (known after apply)
+      + region                      = "us-east-1"
+      + request_payer               = (known after apply)
+      + tags_all                    = {
+          + "CostCenter" = "R+D"
+          + "Country"    = "mx"
+          + "ManagedBy"  = "terraform"
+          + "Owner"      = "Chapter-Data"
+          + "Repository" = "github.com/some-example-org/service-beta"
+          + "Service"    = "service-beta"
+          + "Team"       = "Analytics"
+        }
+      + website_domain              = (known after apply)
+      + website_endpoint            = (known after apply)
+
+      + cors_rule (known after apply)
+
+      + grant (known after apply)
+
+      + lifecycle_rule (known after apply)
+
+      + logging (known after apply)
+
+      + object_lock_configuration (known after apply)
+
+      + replication_configuration (known after apply)
+
+      + server_side_encryption_configuration (known after apply)
+
+      + versioning (known after apply)
+
+      + website (known after apply)
+    }
+
+  # module.s3["reports"].aws_s3_bucket_public_access_block.this will be created
+  + resource "aws_s3_bucket_public_access_block" "this" {
+      + block_public_acls       = true
+      + block_public_policy     = true
+      + bucket                  = (known after apply)
+      + id                      = (known after apply)
+      + ignore_public_acls      = true
+      + region                  = "us-east-1"
+      + restrict_public_buckets = true
+    }
+
+  # module.s3["reports"].aws_s3_bucket_server_side_encryption_configuration.this will be created
+  + resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
+      + bucket = (known after apply)
+      + id     = (known after apply)
+      + region = "us-east-1"
+
+      + rule {
+          + blocked_encryption_types = (known after apply)
+          + bucket_key_enabled       = (known after apply)
+
+          + apply_server_side_encryption_by_default {
+              + kms_master_key_id = (known after apply)
+              + sse_algorithm     = "AES256"
+            }
+        }
+    }
+
+  # module.s3["reports"].aws_s3_bucket_versioning.this will be created
+  + resource "aws_s3_bucket_versioning" "this" {
+      + bucket = (known after apply)
+      + id     = (known after apply)
+      + region = "us-east-1"
+
+      + versioning_configuration {
+          + mfa_delete = (known after apply)
+          + status     = "Enabled"
+        }
+    }
+
+Plan: 6 to add, 0 to change, 0 to destroy.
+
+Changes to Outputs:
+  + aws_region    = "us-east-1"
+  + buckets       = [
+      + (known after apply),
+    ]
+  + country       = "mx"
+  + workload_role = "service-beta-mx-workload"
+module.iam.aws_iam_role.this: Creating...
+module.s3["reports"].aws_s3_bucket.this: Creating...
+module.iam.aws_iam_role.this: Creation complete after 0s [id=service-beta-mx-workload]
+module.s3["reports"].aws_iam_role_policy.grant[0]: Creating...
+module.s3["reports"].aws_iam_role_policy.grant[0]: Creation complete after 0s [id=service-beta-mx-workload:s3-example-org-service-beta-reports-mx]
+module.s3["reports"].aws_s3_bucket.this: Creation complete after 0s [id=example-org-service-beta-reports-mx]
+module.s3["reports"].aws_s3_bucket_public_access_block.this: Creating...
+module.s3["reports"].aws_s3_bucket_versioning.this: Creating...
+module.s3["reports"].aws_s3_bucket_server_side_encryption_configuration.this: Creating...
+module.s3["reports"].aws_s3_bucket_public_access_block.this: Creation complete after 0s [id=example-org-service-beta-reports-mx]
+module.s3["reports"].aws_s3_bucket_server_side_encryption_configuration.this: Creation complete after 0s [id=example-org-service-beta-reports-mx]
+module.s3["reports"].aws_s3_bucket_versioning.this: Creation complete after 1s [id=example-org-service-beta-reports-mx]
+
+Apply complete! Resources: 6 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+aws_region = "us-east-1"
+buckets = [
+  "example-org-service-beta-reports-mx",
+]
+country = "mx"
+workload_role = "service-beta-mx-workload"
+Created and switched to workspace "co"!
+
+You're now on a new, empty workspace. Workspaces isolate their state,
+so if you run "terraform plan" Terraform will not see any existing state
+for this configuration.
+
+Terraform used the selected providers to generate the following execution plan. Resource actions are indicated with the following symbols:
+  + create
+
+Terraform will perform the following actions:
+
+  # module.iam.aws_iam_role.this will be created
+  + resource "aws_iam_role" "this" {
+      + arn                   = (known after apply)
+      + assume_role_policy    = jsonencode(
+            {
+              + Statement = [
+                  + {
+                      + Action    = [
+                          + "sts:AssumeRole",
+                          + "sts:TagSession",
+                        ]
+                      + Effect    = "Allow"
+                      + Principal = {
+                          + Service = "pods.eks.amazonaws.com"
+                        }
+                    },
+                ]
+              + Version   = "2012-10-17"
+            }
+        )
+      + create_date           = (known after apply)
+      + force_detach_policies = false
+      + id                    = (known after apply)
+      + managed_policy_arns   = (known after apply)
+      + max_session_duration  = 3600
+      + name                  = "service-beta-co-workload"
+      + name_prefix           = (known after apply)
+      + path                  = "/"
+      + tags_all              = {
+          + "CostCenter" = "R+D"
+          + "Country"    = "co"
+          + "ManagedBy"  = "terraform"
+          + "Owner"      = "Chapter-Data"
+          + "Repository" = "github.com/some-example-org/service-beta"
+          + "Service"    = "service-beta"
+          + "Team"       = "Analytics"
+        }
+      + unique_id             = (known after apply)
+
+      + inline_policy (known after apply)
+    }
+
+Plan: 1 to add, 0 to change, 0 to destroy.
+
+Changes to Outputs:
+  + aws_region    = "us-east-2"
+  + buckets       = []
+  + country       = "co"
+  + workload_role = "service-beta-co-workload"
+module.iam.aws_iam_role.this: Creating...
+module.iam.aws_iam_role.this: Creation complete after 0s [id=service-beta-co-workload]
+
+Apply complete! Resources: 1 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+aws_region = "us-east-2"
+buckets = []
+country = "co"
+workload_role = "service-beta-co-workload"
+Created and switched to workspace "br"!
+
+You're now on a new, empty workspace. Workspaces isolate their state,
+so if you run "terraform plan" Terraform will not see any existing state
+for this configuration.
+
+Terraform used the selected providers to generate the following execution plan. Resource actions are indicated with the following symbols:
+  + create
+
+Terraform will perform the following actions:
+
+  # module.s3["reports"].aws_iam_role_policy.grant[0] will be created
+  + resource "aws_iam_role_policy" "grant" {
+      + id          = (known after apply)
+      + name        = "s3-example-org-service-beta-reports-br"
+      + name_prefix = (known after apply)
+      + policy      = jsonencode(
+            {
+              + Statement = [
+                  + {
+                      + Action   = [
+                          + "s3:ListBucket",
+                        ]
+                      + Effect   = "Allow"
+                      + Resource = [
+                          + "arn:aws:s3:::example-org-service-beta-reports-br",
+                        ]
+                      + Sid      = "Bucket"
+                    },
+                  + {
+                      + Action   = [
+                          + "s3:GetObject",
+                        ]
+                      + Effect   = "Allow"
+                      + Resource = [
+                          + "arn:aws:s3:::example-org-service-beta-reports-br/*",
+                        ]
+                      + Sid      = "Objects"
+                    },
+                ]
+              + Version   = "2012-10-17"
+            }
+        )
+      + role        = "service-beta-br-workload"
+    }
+
+  # module.s3["reports"].aws_s3_bucket.this will be created
+  + resource "aws_s3_bucket" "this" {
+      + acceleration_status         = (known after apply)
+      + acl                         = (known after apply)
+      + arn                         = (known after apply)
+      + bucket                      = "example-org-service-beta-reports-br"
+      + bucket_domain_name          = (known after apply)
+      + bucket_namespace            = (known after apply)
+      + bucket_prefix               = (known after apply)
+      + bucket_region               = (known after apply)
+      + bucket_regional_domain_name = (known after apply)
+      + force_destroy               = false
+      + hosted_zone_id              = (known after apply)
+      + id                          = (known after apply)
+      + object_lock_enabled         = (known after apply)
+      + policy                      = (known after apply)
+      + region                      = "sa-east-1"
+      + request_payer               = (known after apply)
+      + tags_all                    = {
+          + "CostCenter" = "R+D"
+          + "Country"    = "br"
+          + "ManagedBy"  = "terraform"
+          + "Owner"      = "Chapter-Data"
+          + "Repository" = "github.com/some-example-org/service-beta"
+          + "Service"    = "service-beta"
+          + "Team"       = "Analytics"
+        }
+      + website_domain              = (known after apply)
+      + website_endpoint            = (known after apply)
+
+      + cors_rule (known after apply)
+
+      + grant (known after apply)
+
+      + lifecycle_rule (known after apply)
+
+      + logging (known after apply)
+
+      + object_lock_configuration (known after apply)
+
+      + replication_configuration (known after apply)
+
+      + server_side_encryption_configuration (known after apply)
+
+      + versioning (known after apply)
+
+      + website (known after apply)
+    }
+
+  # module.s3["reports"].aws_s3_bucket_public_access_block.this will be created
+  + resource "aws_s3_bucket_public_access_block" "this" {
+      + block_public_acls       = true
+      + block_public_policy     = true
+      + bucket                  = (known after apply)
+      + id                      = (known after apply)
+      + ignore_public_acls      = true
+      + region                  = "sa-east-1"
+      + restrict_public_buckets = true
+    }
+
+  # module.s3["reports"].aws_s3_bucket_server_side_encryption_configuration.this will be created
+  + resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
+      + bucket = (known after apply)
+      + id     = (known after apply)
+      + region = "sa-east-1"
+
+      + rule {
+          + blocked_encryption_types = (known after apply)
+          + bucket_key_enabled       = (known after apply)
+
+          + apply_server_side_encryption_by_default {
+              + kms_master_key_id = (known after apply)
+              + sse_algorithm     = "AES256"
+            }
+        }
+    }
+
+  # module.s3["reports"].aws_s3_bucket_versioning.this will be created
+  + resource "aws_s3_bucket_versioning" "this" {
+      + bucket = (known after apply)
+      + id     = (known after apply)
+      + region = "sa-east-1"
+
+      + versioning_configuration {
+          + mfa_delete = (known after apply)
+          + status     = "Enabled"
+        }
+    }
+
+  # module.iam.aws_iam_role.this will be created
+  + resource "aws_iam_role" "this" {
+      + arn                   = (known after apply)
+      + assume_role_policy    = jsonencode(
+            {
+              + Statement = [
+                  + {
+                      + Action    = [
+                          + "sts:AssumeRole",
+                          + "sts:TagSession",
+                        ]
+                      + Effect    = "Allow"
+                      + Principal = {
+                          + Service = "pods.eks.amazonaws.com"
+                        }
+                    },
+                ]
+              + Version   = "2012-10-17"
+            }
+        )
+      + create_date           = (known after apply)
+      + force_detach_policies = false
+      + id                    = (known after apply)
+      + managed_policy_arns   = (known after apply)
+      + max_session_duration  = 3600
+      + name                  = "service-beta-br-workload"
+      + name_prefix           = (known after apply)
+      + path                  = "/"
+      + tags_all              = {
+          + "CostCenter" = "R+D"
+          + "Country"    = "br"
+          + "ManagedBy"  = "terraform"
+          + "Owner"      = "Chapter-Data"
+          + "Repository" = "github.com/some-example-org/service-beta"
+          + "Service"    = "service-beta"
+          + "Team"       = "Analytics"
+        }
+      + unique_id             = (known after apply)
+
+      + inline_policy (known after apply)
+    }
+
+Plan: 6 to add, 0 to change, 0 to destroy.
+
+Changes to Outputs:
+  + aws_region    = "sa-east-1"
+  + buckets       = []
+  + country       = "br"
+  + workload_role = "service-beta-br-workload"
+module.iam.aws_iam_role.this: Creating...
+module.iam.aws_iam_role.this: Creation complete after 0s [id=service-beta-br-workload]
+
+Apply complete! Resources: 1 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+aws_region = "sa-east-1"
+buckets = []
+country = "br"
+workload_role = "service-beta-br-workload"
 ```
+</details>
+
+After this run, we can check the roles and s3 buckets created:
+
+```
+$ aws iam list-roles --query 'Roles[].RoleName' --output table --no-cli-pager
+-------------------------------
+|          ListRoles          |
++-----------------------------+
+|  service-alpha-mx-workload  |
+|  service-alpha-br-workload  |
+|  service-beta-mx-workload   |
+|  service-beta-co-workload   |
+|  service-beta-br-workload   |
+|  service-alpha-co-workload  |
++-----------------------------+
+$ aws s3 ls
+2026-10-11 12:29:54 example-org-service-beta-reports-br
+2026-10-11 12:12:12 example-org-service-beta-reports-mx
+2026-10-10 20:04:01 tfstate-000000000000-us-east-1
+```
+
+# Next Steps
+When the solution gets to Production, we will separate this monorepo into multiple repositories, for example a repository for terraform modules (or a repository per TF module), so we can have "imports" in the services repositories like:
+```
+module "s3" {
+  source = "git::https://github.com/some-example-org/infra-modules.git//modules/s3?ref=s3/v1"
+```
+And we can have semantic versioning like `s3/v1`, `s3/v1.0` and `s3/v1.0.0`, so the users can pin to an specific version of the modules.

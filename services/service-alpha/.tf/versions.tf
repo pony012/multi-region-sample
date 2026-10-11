@@ -6,14 +6,14 @@ terraform {
       version = "~> 6.0"
     }
   }
-  # Remote state (bucket and region come from ../../../backend.hcl).
   backend "s3" {
-    key = "services/service-alpha/terraform.tfstate"
+    key                  = "services/service-alpha/terraform.tfstate"
+    workspace_key_prefix = "countries"
   }
 }
 
 provider "aws" {
-  region = module.context.aws_region # from the country (var.region)
+  region = module.context.aws_region # from the country in <country>.tfvars
   default_tags {
     tags = module.context.tags
   }

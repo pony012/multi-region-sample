@@ -7,7 +7,7 @@ For now, we're assuming that these roles will be used for EKS pods (assumed role
 We won't allow wildcards until justified (basic justification with more than 20 characters).
 
 # Usage
-```
+```hcl
 module "iam" {
   source = "../../../modules/iam-role"
 
