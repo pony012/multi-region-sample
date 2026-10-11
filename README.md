@@ -49,3 +49,43 @@ For this example, we will work with at least three folders in a monorepo (this r
 Its important to say that the name of the assets should be deterministic, we must use EKS Pod Identity and not the IAM roles of the nodes itself, and we should be able to test this with Localstack. Also, we will separate the cluster itself (eks) for its "virtual" components such as Namespaces, we will have kubernetes service configurations as manifests in each service repository.
 
 The CI/CD pipeline should be able to apply the Software Engineering teams services' configurations to each country like `terraform plan-var-file=<region>.tfvars` (we will run these commands in our local).
+
+# Terraform
+I recommend to use `tfenv` (`brew install tfenv`), but you can install standalone terraform with
+```
+brew tap hashicorp/tap
+brew install hashicorp/tap/terraform
+```
+Latest minor version is `1.16`.
+
+# Requirements and test
+
+## Localstack (v4.14, before March 23, 2026 changes in licensing)
+### Installation
+I've added the docker image to a docker-compose.yml file, you just need to do `docker compose up -d` and then check if it's running with `curl -sf http://localhost:4566/_localstack/health`.
+### Test
+I've added a `scripts/localstack.test` with the sample environment variables to test, so you can test the localstack installation with:
+```
+source scripts/localstack.env
+aws sts get-caller-identity --query Account --output text --no-cli-pager
+```
+
+If you got an error of `InvalidClientTokenId` is that you're using aws cli v1.x, and you have to manually pass the `--endpoint-url=http://localhost:4566` to your commands. I recommend you to install the AWS CLI v2.
+
+## Basic state management with localstack
+
+I've prepared the basic state management that we will use in `platform/bootstrap`, so you can run:
+```
+cd platform/bootstrap
+terraform init && terraform apply
+cd ../..
+```
+If you got an error like `Error: timeout while waiting for plugin to start`, it's because the Docker Machine for localstack was too small. Give it more resources.
+I will work with podman, in my case I used
+````
+podman machine stop
+podman machine init --rootful podman-machine-rootful
+podman machine stop podman-machine-rootful
+podman machine set --memory 6144 podman-machine-rootful
+podman machine start podman-machine-rootful
+````
