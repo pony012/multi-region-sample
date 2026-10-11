@@ -56,12 +56,6 @@ variable "repository" {
   type = string
 }
 
-variable "cluster" {
-  type        = string
-  default     = "shared"
-  description = "Logical cluster; physical cluster = <cluster>-<country>."
-}
-
 variable "extra_tags" {
   type    = map(string)
   default = {}
@@ -69,10 +63,11 @@ variable "extra_tags" {
 
 locals {
   # The only place where countries are defined (docs/conventions.md).
+  # Only the second octet of the VPC CIDR changes between countries.
   countries = {
-    mx = { aws_region = "us-east-1" }
-    co = { aws_region = "us-east-2" }
-    br = { aws_region = "sa-east-1" }
+    mx = { aws_region = "us-east-1", cidr = "10.0.0.0/16" }
+    co = { aws_region = "us-east-2", cidr = "10.32.0.0/16" }
+    br = { aws_region = "sa-east-1", cidr = "10.64.0.0/16" }
   }
   country = local.countries[var.region]
   owner   = coalesce(var.owner, var.team)
@@ -103,6 +98,16 @@ output "aws_region" {
   }
 }
 
+output "vpc_cidr" {
+  description = "VPC CIDR of the country."
+  value       = local.country.cidr
+}
+
+output "azs" {
+  description = "Three AZs of the region (deterministic, no lookup)."
+  value       = [for s in ["a", "b", "c"] : "${local.country.aws_region}${s}"]
+}
+
 output "tags" {
   value = local.tags
 }
@@ -114,11 +119,6 @@ output "owner" {
 output "name_prefix" {
   description = "<service>-<country>"
   value       = "${var.service}-${var.region}"
-}
-
-output "cluster_name" {
-  description = "<cluster>-<country>"
-  value       = "${var.cluster}-${var.region}"
 }
 
 output "workload_role_name" {
