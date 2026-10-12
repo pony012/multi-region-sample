@@ -42,7 +42,7 @@ variable "node_groups" {
       tolerations:  [{ key: platform.example.org/node-group, value: <name>, effect: NoSchedule }]
   EOT
   type = list(object({
-    name           = string
+    name = string
     # Prevent the usage of t family in production, specially for Spring Boot aplications that are CPU intensive in the start of the applications
     # For production we should use M family for general purpose applications, C family for compute optimized or R family for memory optimized workloads
     instance_types = optional(list(string), ["t3.medium"])
@@ -60,11 +60,11 @@ variable "node_groups" {
   default = [{ name = "default" }]
 
   validation {
-    condition     = length([for g in var.node_groups : g if g.name == "default" && length(g.taints) == 0]) == 1
+    condition     = length([for group in var.node_groups : group if group.name == "default" && length(group.taints) == 0]) == 1
     error_message = "A node group named \"default\" without taints is required."
   }
   validation {
-    condition     = alltrue([for g in var.node_groups : g.name == "default" || length(g.taints) > 0])
+    condition     = alltrue([for group in var.node_groups : group.name == "default" || length(group.taints) > 0])
     error_message = "Node groups other than \"default\" need a taint, so workloads only land there when they opt in."
   }
 }
@@ -174,7 +174,7 @@ resource "aws_launch_template" "node" {
 
 locals {
   node_group_label = "platform.example.org/node-group"
-  node_groups      = { for g in var.node_groups : g.name => g }
+  node_groups      = { for group in var.node_groups : group.name => g }
 }
 
 resource "aws_eks_node_group" "this" {
@@ -187,8 +187,8 @@ resource "aws_eks_node_group" "this" {
   instance_types  = each.value.instance_types
   capacity_type   = each.value.capacity_type
   # We should be able to have different ami per nodegroup
-  ami_type        = "AL2023_x86_64_STANDARD" # For example if we want to use graviton, we should use AL2023_ARM_64_STANDARD
-  tags            = merge(var.tags, { NodeGroup = each.key })
+  ami_type = "AL2023_x86_64_STANDARD" # For example if we want to use graviton, we should use AL2023_ARM_64_STANDARD
+  tags     = merge(var.tags, { NodeGroup = each.key })
 
   # Selection: nodeSelector on this label (+ a toleration for the group's taints).
   labels = merge(each.value.labels, { (local.node_group_label) = each.key })
@@ -255,9 +255,9 @@ output "node_role_name" {
 output "node_groups" {
   description = "How workloads select each node group."
   value = {
-    for name, g in local.node_groups : name => {
+    for name, group in local.node_groups : name => {
       node_selector = { (local.node_group_label) = name }
-      taints        = g.taints
+      taints        = group.taints
     }
   }
 }

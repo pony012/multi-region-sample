@@ -22,7 +22,7 @@ provider "aws" {
 data "aws_caller_identity" "current" {}
 
 module "state" {
-  source      = "../../modules/state-backend"
+  source = "../../modules/state-backend"
   # If we have more than one account, it's important to have different account/region name
   # for each state
   bucket_name = "tfstate-${data.aws_caller_identity.current.account_id}-${var.aws_region}"

@@ -79,7 +79,7 @@ locals {
   owner   = coalesce(var.owner, var.team)
 
   tags = merge(var.extra_tags, {
-    for k, v in {
+    for key, value in {
       Service    = var.service
       Team       = var.team
       CostCenter = var.cost_center
@@ -87,7 +87,7 @@ locals {
       Repository = var.repository
       Country    = var.region
       ManagedBy  = "terraform"
-    } : k => replace(v, "&", "+") # AWS tag charset
+    } : key => replace(value, "&", "+") # AWS tag charset
   })
 }
 
@@ -111,7 +111,7 @@ output "vpc_cidr" {
 
 output "azs" {
   description = "Three AZs of the region (deterministic, no lookup)."
-  value       = [for s in ["a", "b", "c"] : "${local.country.aws_region}${s}"]
+  value       = [for az in ["a", "b", "c"] : "${local.country.aws_region}${az}"]
 }
 
 output "tags" {
