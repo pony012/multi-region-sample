@@ -1,0 +1,15 @@
+# The namespace is part of the service, not of the cluster: it's created with the service's manifests (kubectl apply -k / GitOps), not by Terraform.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: service-beta
+  labels:
+    platform.example.org/exposure: edge # internal | edge
+    pod-security.kubernetes.io/enforce: restricted
+---
+# AWS credentials: EKS Pod Identity binds this ServiceAccount to the role service-alpha-<country>-workload (.tf/iam.tf). No annotation needed
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: service-beta
+  namespace: service-beta

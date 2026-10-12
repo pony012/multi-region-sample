@@ -460,6 +460,180 @@ Changes to Outputs:
 | `aws_iam_role.cluster` / `.node` | `shared-mx-cluster` / `shared-mx-node` |
 | `aws_launch_template.node` | `http_tokens = "required"`, `http_put_response_hop_limit = 1` |
 
+### 1.6 Kubernetes manifests: render each overlay
+
+Each service keeps its Kubernetes manifests in `.k8s/`: a `base/` shared by every country and one `overlays/<country>/` per country where it runs (today the overlay only sets the `COUNTRY` env var). Like `terraform plan`, `kubectl kustomize` only renders the final YAML of an overlay: it doesn't need a cluster and applies nothing.
+
+From the repository root:
+```
+kubectl kustomize services/<service>/.k8s/overlays/<country>
+```
+
+For example, Colombia for `service-alpha`:
+```
+kubectl kustomize services/service-alpha/.k8s/overlays/co
+```
+Repeat it for every `services/*/.k8s/overlays/*` folder. In each rendered output, we could check:
+
+1. Everything is in the service's namespace (`namespace: <service>`), including the `Namespace` itself, its `ServiceAccount` and the two `NetworkPolicy` (`default-deny-ingress` + `allow-clients`).
+2. `serviceAccountName: <service>`: it's the ServiceAccount bound to the `<service>-<country>-workload` role by the Pod Identity association planned in the service's `.tf` (`namespace` and `service_account` in the plan).
+3. `COUNTRY` has the overlay's country (`value: co`).
+4. The node group: with no `nodeSelector` nor `tolerations`, the pods run on the `default` node group (`service-alpha` and `service-beta`).
+
+#### service-gamma: opt-in to the batch node group
+
+`service-gamma` is a batch worker that only runs in Mexico, so it has a single overlay:
+```
+kubectl kustomize services/service-gamma/.k8s/overlays/mx
+```
+
+<details>
+<summary>Output (Deployment)</summary>
+
+```
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-gamma
+  namespace: service-gamma
+spec:
+  replicas: 2
+  ...
+  template:
+    spec:
+      containers:
+      - env:
+        - name: COUNTRY
+          value: mx
+        ...
+      nodeSelector:
+        platform.example.org/node-group: batch
+      ...
+      serviceAccountName: service-gamma
+      tolerations:
+      - effect: NoSchedule
+        key: platform.example.org/node-group
+        operator: Equal
+        value: batch
+```
+</details>
+
+These two blocks are the service's side of the `batch` node group planned in 1.5 (`node_groups` output of the platform plan):
+
+| Platform (`platform/.tf/mx.tfvars`, `modules/eks`) | service-gamma (`.k8s/base/deployment.yaml`) | Effect |
+|---|---|---|
+| Label `platform.example.org/node-group=batch` on every `batch` node | `nodeSelector: { platform.example.org/node-group: batch }` | gamma's pods can only run on `batch` nodes |
+| Taint `platform.example.org/node-group=batch:NoSchedule` (`NO_SCHEDULE` in Terraform) | `tolerations: [{ key: platform.example.org/node-group, operator: Equal, value: batch, effect: NoSchedule }]` | gamma's pods are allowed on the tainted nodes. Poods without it (alpha, beta) are kept out |
+
+Both are needed: the toleration alone would let gamma run on `default` or `batch`, and the `nodeSelector` alone would leave the pods `Pending` (the only matching nodes have a taint they don't tolerate). Together, `batch` is exclusive for the services that opt in, and `default` stays for everybody else. `modules/eks` enforces the platform side: an untainted `default` group is required, and any other group must have a taint.
+
+**Important**:
+- The `batch` group only exists in `platform/.tf/mx.tfvars`. That's why `service-gamma` only has `overlays/mx` (and `regions = ["mx"]` in its Terraform): an overlay for `co` or `br` would leave its pods `Pending`, since those clusters have no `batch` nodes. There's nothing to render for them:
+  ```
+  $ kubectl kustomize services/service-gamma/.k8s/overlays/co
+    Error: evalsymlink failure on 'services/service-gamma/.k8s/overlays/co' : lstat /Users/alan/repo/clara-private/multi-region-sample/services/service-gamma/.k8s/overlays/co: no such file or directory
+  ```
+- `batch` has `min_size = 0`: if it has no running nodes, gamma's pods stay `Pending` until the group scales up, which needs an autoscaler (Cluster Autoscaler or Karpenter).
+
+### 1.7 Workload: service-gamma (least-privilege access to service-alpha's bucket)
+
+`service-gamma` has no bucket of its own: it reads a subfolder of the bucket owned by `service-alpha` (`example-org-service-alpha-reports-mx`). Instead of reusing alpha's role, or giving `s3:*` on the whole bucket, its own role (`service-gamma-mx-workload`) gets only what it needs, declared in `services/service-gamma/.tf/iam.auto.tfvars`
+
+```
+cd services/service-gamma/.tf
+terraform init -reconfigure -backend-config=../../../backend.hcl
+
+terraform workspace select -or-create mx
+terraform plan -var-file=mx.tfvars
+```
+
+<details>
+<summary>Output (summary)</summary>
+
+```
+  # module.iam.aws_eks_pod_identity_association.this[0] will be created
+      + cluster_name         = "shared-mx"
+      + namespace            = "service-gamma"
+      + region               = "us-east-1"
+      + service_account      = "service-gamma"
+  # module.iam.aws_iam_role.this will be created
+      + name                  = "service-gamma-mx-workload"
+
+  # module.iam.aws_iam_role_policy.custom[0] will be created
+  + resource "aws_iam_role_policy" "custom" {
+      + name        = "custom"
+      + policy      = jsonencode(
+            {
+              + Statement = [
+                  + {
+                      + Action    = [
+                          + "s3:ListBucket",
+                        ]
+                      + Condition = {
+                          + StringLike = {
+                              + "s3:prefix" = [
+                                  + "processed_reports/*",
+                                ]
+                            }
+                        }
+                      + Effect    = "Allow"
+                      + Resource  = [
+                          + "arn:aws:s3:::example-org-service-alpha-reports-mx",
+                        ]
+                      + Sid       = "Stmt0"
+                    },
+                  + {
+                      + Action   = [
+                          + "s3:GetObject",
+                        ]
+                      + Effect   = "Allow"
+                      + Resource = [
+                          + "arn:aws:s3:::example-org-service-alpha-reports-mx/processed_reports/*",
+                        ]
+                      + Sid      = "Stmt1"
+                    },
+                  + {
+                      + Action   = [
+                          + "s3:GetObject",
+                        ]
+                      + Effect   = "Allow"
+                      + Resource = [
+                          + "arn:aws:s3:::example-org-service-alpha-reports-mx/exports/*/summary.json",
+                        ]
+                      + Sid      = "JustifiedWildcard2"
+                    },
+                ]
+              + Version   = "2012-10-17"
+            }
+        )
+      + role        = "service-gamma-mx-workload"
+    }
+
+Plan: 3 to add, 0 to change, 0 to destroy.
+
+Changes to Outputs:
+  + aws_region    = "us-east-1"
+  + country       = "mx"
+  + workload_role = "service-gamma-mx-workload"
+```
+</details>
+
+For testing purposes, if you remove the `justification` from the third statement in `iam.auto.tfvars` and plan again, the `iam-role` module refuses it:
+```
+Error: Invalid value for variable
+
+  on iam.tf line 29, in module "iam":
+  29:   policy_statements               = var.iam_policy_statements
+    ├────────────────
+    │ var.policy_statements is list of object with 1 element
+
+Least privilege: wildcard actions/resources need a `justification` of at
+least 20 characters.
+
+This was checked by the validation rule at
+../../../modules/iam-role/main.tf:47,3-13.
+```
+
 # Next Steps
 When the solution gets to Production, we will separate this monorepo into multiple repositories, for example a repository for terraform modules (or a repository per TF module), so we can have "imports" in the services repositories like:
 ```
