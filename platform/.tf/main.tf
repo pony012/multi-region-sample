@@ -13,6 +13,9 @@ variable "repository" {
 variable "regions" {
   type = list(string)
 }
+variable "cluster" {
+  type = string
+}
 variable "region" {
   type        = string
   description = "Country: set in <country>.tfvars."
@@ -21,13 +24,10 @@ variable "single_nat_gateway" {
   type    = bool
   default = false
 }
-
-variable "cluster" {
-  type = string
-}
-variable "node_group" {
-  type    = any
-  default = {}
+variable "node_groups" {
+  type        = any
+  default     = [{ name = "default" }]
+  description = "Managed node groups (see modules/eks/README.md). \"default\" is required and untainted."
 }
 
 module "context" {
@@ -55,9 +55,9 @@ module "vpc" {
 module "eks" {
   source = "../../modules/eks"
 
-  name       = module.context.cluster_name
-  subnet_ids = module.vpc.private_subnet_ids
-  node_group = var.node_group
+  name        = module.context.cluster_name
+  subnet_ids  = module.vpc.private_subnet_ids
+  node_groups = var.node_groups
 }
 
 output "country" {
@@ -74,4 +74,8 @@ output "vpc_cidr" {
 
 output "cluster_name" {
   value = module.eks.name
+}
+
+output "node_groups" {
+  value = module.eks.node_groups
 }

@@ -26,7 +26,7 @@ variable "name" {
 
 variable "kubernetes_version" {
   type    = string
-  default = "1.34"
+  default = "1.36" # One previous latest https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html#available-versions
 }
 
 variable "subnet_ids" {
@@ -34,16 +34,39 @@ variable "subnet_ids" {
   description = "Private (compute) subnets for the control plane ENIs and the nodes."
 }
 
-variable "node_group" {
-  type = object({
+variable "node_groups" {
+  description = <<-EOT
+    Managed node groups. "default" is required and has no taints: every pod that doesn't ask for a node group runs there.
+    Any other group (batch, memory, etc) must be tainted, so only workloads that opt in land on it:
+      nodeSelector: { platform.example.org/node-group: <name> }
+      tolerations:  [{ key: platform.example.org/node-group, value: <name>, effect: NoSchedule }]
+  EOT
+  type = list(object({
+    name           = string
     # Prevent the usage of t family in production, specially for Spring Boot aplications that are CPU intensive in the start of the applications
     # For production we should use M family for general purpose applications, C family for compute optimized or R family for memory optimized workloads
-    instance_types = optional(list(string), ["t3.medium"]) 
+    instance_types = optional(list(string), ["t3.medium"])
+    capacity_type  = optional(string, "ON_DEMAND") # ON_DEMAND | SPOT (some workloads would support SPOT instance)
     desired_size   = optional(number, 2)
     min_size       = optional(number, 1)
     max_size       = optional(number, 4)
-  })
-  default = {}
+    labels         = optional(map(string), {})
+    taints = optional(list(object({
+      key    = string
+      value  = string
+      effect = string # NO_SCHEDULE | NO_EXECUTE | PREFER_NO_SCHEDULE
+    })), [])
+  }))
+  default = [{ name = "default" }]
+
+  validation {
+    condition     = length([for g in var.node_groups : g if g.name == "default" && length(g.taints) == 0]) == 1
+    error_message = "A node group named \"default\" without taints is required."
+  }
+  validation {
+    condition     = alltrue([for g in var.node_groups : g.name == "default" || length(g.taints) > 0])
+    error_message = "Node groups other than \"default\" need a taint, so workloads only land there when they opt in."
+  }
 }
 
 variable "admin_principal_arns" {
@@ -149,15 +172,35 @@ resource "aws_launch_template" "node" {
   }
 }
 
-resource "aws_eks_node_group" "default" {
+locals {
+  node_group_label = "platform.example.org/node-group"
+  node_groups      = { for g in var.node_groups : g.name => g }
+}
+
+resource "aws_eks_node_group" "this" {
+  for_each = local.node_groups
+
   cluster_name    = aws_eks_cluster.this.name
-  node_group_name = "default"
+  node_group_name = each.key
   node_role_arn   = aws_iam_role.node.arn
   subnet_ids      = var.subnet_ids
-  instance_types  = var.node_group.instance_types
-  # We should check if this AMI is the better option
+  instance_types  = each.value.instance_types
+  capacity_type   = each.value.capacity_type
+  # We should be able to have different ami per nodegroup
   ami_type        = "AL2023_x86_64_STANDARD" # For example if we want to use graviton, we should use AL2023_ARM_64_STANDARD
-  tags            = var.tags
+  tags            = merge(var.tags, { NodeGroup = each.key })
+
+  # Selection: nodeSelector on this label (+ a toleration for the group's taints).
+  labels = merge(each.value.labels, { (local.node_group_label) = each.key })
+
+  dynamic "taint" {
+    for_each = each.value.taints
+    content {
+      key    = taint.value.key
+      value  = taint.value.value
+      effect = taint.value.effect
+    }
+  }
 
   launch_template {
     id      = aws_launch_template.node.id
@@ -165,9 +208,9 @@ resource "aws_eks_node_group" "default" {
   }
 
   scaling_config {
-    desired_size = var.node_group.desired_size
-    min_size     = var.node_group.min_size
-    max_size     = var.node_group.max_size
+    desired_size = each.value.desired_size
+    min_size     = each.value.min_size
+    max_size     = each.value.max_size
   }
 
   lifecycle {
@@ -177,7 +220,13 @@ resource "aws_eks_node_group" "default" {
   depends_on = [aws_iam_role_policy_attachment.node]
 }
 
-# --- Add-ons ---
+# The single node group of the previous version keeps its state.
+moved {
+  from = aws_eks_node_group.default
+  to   = aws_eks_node_group.this["default"]
+}
+
+# --- Add-ons (only what workloads need) ---
 
 resource "aws_eks_addon" "this" {
   for_each = {
@@ -192,7 +241,7 @@ resource "aws_eks_addon" "this" {
   configuration_values        = each.value
   resolve_conflicts_on_update = "OVERWRITE"
 
-  depends_on = [aws_eks_node_group.default]
+  depends_on = [aws_eks_node_group.this]
 }
 
 output "name" {
@@ -201,4 +250,14 @@ output "name" {
 
 output "node_role_name" {
   value = aws_iam_role.node.name
+}
+
+output "node_groups" {
+  description = "How workloads select each node group."
+  value = {
+    for name, g in local.node_groups : name => {
+      node_selector = { (local.node_group_label) = name }
+      taints        = g.taints
+    }
+  }
 }

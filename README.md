@@ -383,7 +383,7 @@ The plan fails before showing any resource, so a wrong combination can't even be
 
 ### 1.5 Platform: VPC and EKS cluster for Mexico
 
-Only `mx.tfvars` exists for the platform for now.
+For `mx.tfvars`, we will create two node groups, and for co and br, we will create only the default one.
 ```
 cd ../../../platform/.tf
 terraform init -reconfigure -backend-config=../../backend.hcl
@@ -418,12 +418,32 @@ terraform plan -var-file=mx.tfvars
   # module.vpc.module.vpc.aws_internet_gateway.this[0] will be created
   # ... route tables, routes, associations, default ACL / route table / security group
 
-Plan: 50 to add, 0 to change, 0 to destroy.
+Plan: 51 to add, 0 to change, 0 to destroy.
 
 Changes to Outputs:
   + aws_region   = "us-east-1"
   + cluster_name = "shared-mx"
   + country      = "mx"
+  + node_groups  = {
+      + batch   = {
+          + node_selector = {
+              + "platform.example.org/node-group" = "batch"
+            }
+          + taints        = [
+              + {
+                  + effect = "NO_SCHEDULE"
+                  + key    = "platform.example.org/node-group"
+                  + value  = "batch"
+                },
+            ]
+        }
+      + default = {
+          + node_selector = {
+              + "platform.example.org/node-group" = "default"
+            }
+          + taints        = []
+        }
+    }
   + vpc_cidr     = "10.0.0.0/16"
 ```
 </details>
@@ -436,7 +456,7 @@ Changes to Outputs:
 | `aws_subnet.database[0..2]` | `10.0.144.0/22`, `10.0.148.0/22`, `10.0.152.0/22` in `us-east-1a`, `b`, `c` |
 | `aws_nat_gateway.this[0..2]` | 3 (one per AZ: `single_nat_gateway = false` in `mx.tfvars`) |
 | `aws_eks_cluster.this` | `name = "shared-mx"`, `endpoint_public_access = false` |
-| `aws_eks_node_group.default` | `instance_types = ["t3.large"]`, desired 3 / min 2 / max 6 |
+| `aws_eks_node_groups` | `{ node_group_name = "default"..., node_group_name = "batch" }` |
 | `aws_iam_role.cluster` / `.node` | `shared-mx-cluster` / `shared-mx-node` |
 | `aws_launch_template.node` | `http_tokens = "required"`, `http_put_response_hop_limit = 1` |
 
