@@ -46,9 +46,9 @@ variable "policy_statements" {
 
   validation {
     condition = alltrue([ # Only resources with trailing /* and without justification are valid. Any other * without justification is not valid.
-      for s in var.policy_statements : try(length(trimspace(s.justification)), 0) >= 20 || (
-        !anytrue([for a in s.actions : strcontains(a, "*")]) &&
-        !anytrue([for r in s.resources : strcontains(r, "*") && !can(regex("^arn:[^*]+/\\*$", r))]) # ^arn:[^*]+/\\*$ => Resorces ontains * except for trailing /*
+      for stmt in var.policy_statements : try(length(trimspace(stmt.justification)), 0) >= 20 || (
+        !anytrue([for action in stmt.actions : strcontains(action, "*")]) &&
+        !anytrue([for resource in stmt.resources : strcontains(resource, "*") && !can(regex("^arn:[^*]+/\\*$", resource))]) # ^arn:[^*]+/\\*$ => Resorces contains * except for trailing /*
       )
     ])
     error_message = "Least privilege: wildcard actions/resources need a `justification` of at least 20 characters."
@@ -80,17 +80,17 @@ resource "aws_iam_role_policy" "custom" {
   role = aws_iam_role.this.name
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [for i, s in var.policy_statements : merge(
+    Statement = [for i, stmt in var.policy_statements : merge(
       {
-        Sid      = s.justification != null ? "JustifiedWildcard${i}" : "Stmt${i}"
+        Sid      = stmt.justification != null ? "JustifiedWildcard${i}" : "Stmt${i}"
         Effect   = "Allow" # We only allow, not deny (for now)
-        Action   = s.actions
-        Resource = s.resources
+        Action   = stmt.actions
+        Resource = stmt.resources
       },
-      length(s.conditions) == 0 ? {} : {
+      length(stmt.conditions) == 0 ? {} : {
         Condition = {
-          for test in distinct([for c in s.conditions : c.test]) : test => {
-            for c in s.conditions : c.variable => c.values if c.test == test
+          for test in distinct([for c in stmt.conditions : c.test]) : test => {
+            for condition in stmt.conditions : condition.variable => condition.values if condition.test == test
           }
         }
       }

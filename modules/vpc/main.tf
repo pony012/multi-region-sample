@@ -55,12 +55,12 @@ module "vpc" {
   # 10.0.144.0  ├─ /22 data a/b/c + 1 free (156)   ── Data /20 (144–159)
   # 10.0.160.0  └─ free (160–255): about 24k addresses for later
   # https://developer.hashicorp.com/terraform/language/functions/cidrsubnet
-  private_subnets  = [for i in range(3) : cidrsubnet(var.cidr, 3, i)] # 10.0.0.0/19, 10.0.32.0/19, 10.0.64.0/19
+  private_subnets  = [for i in range(3) : cidrsubnet(var.cidr, 3, i)]      # 10.0.0.0/19, 10.0.32.0/19, 10.0.64.0/19
   public_subnets   = [for i in range(3) : cidrsubnet(var.cidr, 6, 32 + i)] # 10.0.128.0/22, 10.0.132.0/22, 10.0.136.0/22
   database_subnets = [for i in range(3) : cidrsubnet(var.cidr, 6, 36 + i)] # 10.0.144.0/22, 10.0.148.0/22, 10.0.152.0/22
 
-  private_subnet_tags  = { Tier = "Compute" , "kubernetes.io/role/internal-elb" = "1" } # Tag / annotation for k8s
-  public_subnet_tags   = { Tier = "Public" , "kubernetes.io/role/elb" = "1" } # Tag / annotation for k8s
+  private_subnet_tags  = { Tier = "Compute", "kubernetes.io/role/internal-elb" = "1" } # Tag / annotation for k8s
+  public_subnet_tags   = { Tier = "Public", "kubernetes.io/role/elb" = "1" }           # Tag / annotation for k8s
   database_subnet_tags = { Tier = "Data" }
 
   create_database_subnet_group = false
