@@ -36,6 +36,11 @@ variable "policy_statements" {
     actions       = list(string)
     resources     = list(string)
     justification = optional(string)
+    conditions = optional(list(object({
+      test     = string # StringEquals, StringLike, ...
+      variable = string # s3:prefix, aws:SourceVpc, ...
+      values   = list(string)
+    })), [])
   }))
   default = []
 
@@ -75,12 +80,21 @@ resource "aws_iam_role_policy" "custom" {
   role = aws_iam_role.this.name
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [for i, s in var.policy_statements : {
-      Sid      = s.justification != null ? "JustifiedWildcard${i}" : "Stmt${i}"
-      Effect   = "Allow" # We only allow, not deny (for now)
-      Action   = s.actions
-      Resource = s.resources
-    }]
+    Statement = [for i, s in var.policy_statements : merge(
+      {
+        Sid      = s.justification != null ? "JustifiedWildcard${i}" : "Stmt${i}"
+        Effect   = "Allow" # We only allow, not deny (for now)
+        Action   = s.actions
+        Resource = s.resources
+      },
+      length(s.conditions) == 0 ? {} : {
+        Condition = {
+          for test in distinct([for c in s.conditions : c.test]) : test => {
+            for c in s.conditions : c.variable => c.values if c.test == test
+          }
+        }
+      }
+    )]
   })
 }
 

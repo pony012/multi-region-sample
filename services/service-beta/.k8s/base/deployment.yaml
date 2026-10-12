@@ -1,0 +1,40 @@
+# Workload example
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-beta
+  namespace: service-beta
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: service-beta }
+  template:
+    metadata:
+      labels: { app: service-beta }
+    spec:
+      serviceAccountName: service-beta
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: app
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports: [{ name: http, containerPort: 8080 }]
+          env:
+            - { name: COUNTRY, value: set-by-overlay }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-beta
+  namespace: service-beta
+spec:
+  selector: { app: service-beta }
+  ports: [{ name: http, port: 80, targetPort: http }]
