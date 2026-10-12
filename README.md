@@ -634,6 +634,90 @@ This was checked by the validation rule at
 ../../../modules/iam-role/main.tf:47,3-13.
 ```
 
+# Architectural decisions
+
+This monorepo is a demo. In production it becomes at least three kinds of repositories (`modules`, `platform` and one per `service-x`).
+
+## Terraform modules live in their own repository, with semantic versioning per module
+
+Every service and the platform consume the same modules (`context`, `iam-role`, `s3`, `vpc`, `eks`, ...). In this sample they use relative paths (`../../../modules/s3`), which only works inside one repository and always uses the latest code: a change in a module would reach every service at once.
+
+In next iterations we should have:
+- One `infra-modules` monorepo owned by Platform, with one folder per module (`modules/<name>/`).
+- Every module is versioned on its own with Git tags `<module>/vMAJOR.MINOR.PATCH` (`s3/v1.2.0`), plus moving tags `s3/v1` and `s3/v1.2` that point to the latest compatible release.
+- Services reference a version, never a branch:
+  ```hcl
+  module "s3" {
+    source = "git::https://github.com/some-example-org/infra-modules.git//modules/s3?ref=s3/v1"
+  }
+  ```
+- Semantic versioning rules: **MAJOR** for anything that changes the contract; **MINOR** for new optional inputs, outputs or resources; **PATCH** for fixes with no plan change.
+- The modules repository has its own CI: `terraform fmt -check`, `terraform validate`, `terraform test` and a LocalStack plan of each module's examples before tagging.
+
+This will allow teams to upgrade on their own schedule (and can stay on `s3/v1` while `s3/v2` rolls out), and a module change can't break every service at once. Platform has to keep old majors working for a while and document upgrades in a changelog. Also, because we have the tag of "Repository", we should be able to create automatic PRs for repository owners when update is needed.
+
+We also need to add the module_version or something like that to the tags. To keep track of which module the Engineering teams are using.
+
+## The state backend is injected by CI, not shared as a file
+
+The file `backend.hcl` works in this monorepo, but it can't be shared with every repository of the organization, and backend blocks can't use variables.
+
+So:
+- Every root declares an empty backend, only with what belongs to the repository:
+  ```hcl
+  terraform {
+    backend "s3" {
+      key                  = "services/service-x/terraform.tfstate"
+      workspace_key_prefix = "countries"
+    }
+  }
+  ```
+- The rest is derived from where the pipeline runs (runtime calculations), in a reusable workflow owned by Platform (`some-example-org/platform-ci`, versioned like the modules) that every repository calls something like:
+  ```sh
+  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)   # OIDC role of the repo
+  terraform init \
+    -backend-config="bucket=tfstate-${ACCOUNT_ID}-us-east-1" \ # The region should also be calculated in runtime
+    -backend-config="region=us-east-1" \ # The region should also be calculated in runtime
+    -backend-config="use_lockfile=true" -backend-config="encrypt=true"
+  # then, per country: terraform workspace select -or-create <country> && terraform plan -var-file=<country>.tfvars
+  ```
+- One state bucket per AWS account (`tfstate-<account_id>-<region>`, created by `platform/bootstrap`), one state per repository (`key`) and per country (workspace).
+- Each repository assumes its own role through GitHub OIDC, and that role can only read and write its own prefix in the bucket (`countries/*/services/service-x/*` and its `.tflock`). Only Platform's role can touch `platform/*`.
+- Services don't use `terraform_remote_state`. Cross-repository values are deterministic names (`shared-<country>`, `<service>-<country>-workload`).
+
+### How developers test it.
+1. Locally, against LocalStack: the service template should includes a LocalStack env file and a local `backend.hcl` (or `TF_CLI_ARGS_init="-backend-config=..."`), and they run the same commands as in [Step 1](#step-1): `init`, `workspace select <country>`, `plan -var-file=<country>.tfvars`, and `kubectl kustomize` for the overlays. A disposable LocalStack (a container started with `--rm`, on its own port) gives them an empty account every time.
+2. In the pull request: the reusable workflow plans every country against the real account with a read-only role, runs the policy checks (least privilege, region vs country) and posts the plans in the PR.
+3. Apply only from CI, after merge to `main` and with an approval for production. Developers don't need (or have) write credentials to the accounts.
+
+The bucket naming, the checks and the Terraform version change in one place (`platform-ci`), and repositories opt in by bumping its version. Developers never handle backend configuration for real accounts.
+
+We should shift-left this aproach in the future.
+
+## Namespaces and every "virtual" Kubernetes resource belong to the service
+
+The cluster is shared by many services. If Platform created each service's namespace, every new service would need a ticket and a change in the platform repository, and the namespace would be separated from the code that uses it.
+
+So I've decided that:
+- Platform owns the cluster: EKS, node groups (with their labels and taints), add-ons and cluster-wide guardrails (`platform/.tf`). But if one developer wants to add anohter node group, is free to do it, but platform should review it.
+- The service owns everything inside its namespace, in its own `.k8s/` (`base/` + `overlays/<country>/`): the `Namespace` itself (with its Pod Security level), the `ServiceAccount`, `Deployment`, `Service` and `NetworkPolicy` (default deny + allowed callers). They are applied with `kubectl apply -k .k8s/overlays/<country>` (or GitOps), not by Terraform.
+- The service's Terraform owns its AWS identity: the `<service>-<country>-workload` role and the Pod Identity association with namespace `<service>` and ServiceAccount `<service>`. Both meet deterministic names, so neither depends on the other's state. (this is human error prone but it's a design deicision to allow this. We could validate this in runtime).
+- Choosing a node group is also the service's decision: `nodeSelector` + `tolerations` in its manifests. Platform decides which groups exist in each country. Because is not a common task, I think that this indeed should have a ticket (the creation of a new node group for a given workload).
+
+A new service needs no change in the platform repository. In exchange, Platform has to protect the cluster from what services can declare: the deploy identity of each service only gets permissions in its own namespace, and admission policies enforce the rules (namespace name equals the service, `restricted` Pod Security, a default-deny `NetworkPolicy`, required labels, no `kube-system`).
+
+## Other decisions already in place
+
+| Decision | Where |
+|---|---|
+| One Terraform state per country (workspace = country), refused when they don't match | `modules/context` |
+| Deterministic names (`<service>-<country>-workload`, `shared-<country>`, `<org>-<service>-<purpose>-<country>`) | `modules/context`, `modules/s3` |
+| EKS Pod Identity per service; nodes credentials unreachable from pods (IMDSv2, hop limit 1) | `modules/iam-role`, `modules/eks` |
+| Least privilege by default: wildcards need a justification | `modules/iam-role`|
+| Non-overlapping VPC CIDRs per country (only the second octet changes) | `modules/context`, `modules/vpc` |
+| Private EKS API endpoint | `modules/eks` |
+| An untainted `default` node group; any other group is tainted and opt-in | `modules/eks` |
+
 # Next Steps
 When the solution gets to Production, we will separate this monorepo into multiple repositories, for example a repository for terraform modules (or a repository per TF module), so we can have "imports" in the services repositories like:
 ```
